@@ -252,7 +252,8 @@ export default function App() {
         setPatientSubView('detail');
         fetchData();
       } else {
-        throw new Error(result.error || 'Error al guardar');
+        const errorMsg = result.error || result.details || 'Error desconocido';
+        throw new Error(`Error: ${errorMsg}`);
       }
     } catch (e: any) {
       setStatus({ type: 'error', message: e.message });
@@ -280,7 +281,8 @@ export default function App() {
         setConsultationSubView('list');
         fetchData();
       } else {
-        throw new Error(result.error || 'Error al guardar');
+        const errorMsg = result.error || result.details || 'Error desconocido';
+        throw new Error(`Error: ${errorMsg}`);
       }
     } catch (e: any) {
       setStatus({ type: 'error', message: e.message });

@@ -15,6 +15,18 @@ const __dirname = path.dirname(__filename);
 const PATIENTS_URL = process.env.PATIENTS_URL || "https://script.google.com/macros/s/AKfycby0RXPjUYUxT2Hs3_kM2NAO4x9GJ78j-inwAGE06x6qTZtDBCIxvT7sohL6sZshLrf3/exec";
 const CONSULTATIONS_URL = process.env.CONSULTATIONS_URL || "https://script.google.com/macros/s/AKfycbzzMLb-Z-0HQRNXOcpjfyMCfCn1QvNh_1XxTvEUpRSTXSqhwSNTdR3gfvlMqd7iaEVj/exec";
 
+const isValidUrl = (url: string) => {
+  try {
+    new URL(url);
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+if (!isValidUrl(PATIENTS_URL)) console.warn(">>> WARNING: PATIENTS_URL is not a valid URL!");
+if (!isValidUrl(CONSULTATIONS_URL)) console.warn(">>> WARNING: CONSULTATIONS_URL is not a valid URL!");
+
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 let APP_URL = process.env.APP_URL || "http://localhost:3000";
@@ -168,18 +180,32 @@ async function startServer() {
     const { type, data } = req.body;
     const url = type === "patient" ? PATIENTS_URL : CONSULTATIONS_URL;
     
+    console.log(`>>> Proxy POST to ${type}:`, url);
+    console.log(`>>> Data:`, JSON.stringify(data).substring(0, 100) + "...");
+
     try {
       const response = await axios({
         method: 'post',
         url: url,
         data: JSON.stringify({ ...data, action: 'upsert' }),
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        maxRedirects: 5
+        maxRedirects: 5,
+        timeout: 30000 // 30 seconds timeout
       });
+      
+      console.log(`>>> Google Sheets Response (${type}):`, response.data);
       res.json(response.data);
     } catch (e: any) {
-      console.error(`>>> Google Sheets Error (${type}):`, e.message);
-      res.status(500).json({ error: "Error de comunicación con Google Sheets" });
+      console.error(`>>> Google Sheets Proxy Error (${type}):`, e.message);
+      if (e.response) {
+        console.error(`>>> Response data:`, e.response.data);
+        console.error(`>>> Response status:`, e.response.status);
+      }
+      res.status(500).json({ 
+        error: "Error de comunicación con Google Sheets", 
+        details: e.message,
+        url: url.substring(0, 30) + "..."
+      });
     }
   });
 
@@ -188,12 +214,21 @@ async function startServer() {
     const { type } = req.params;
     const url = type === "patients" ? PATIENTS_URL : CONSULTATIONS_URL;
     
+    console.log(`>>> Proxy GET ${type} from:`, url);
+
     try {
-      const response = await axios.get(url, { maxRedirects: 5 });
+      const response = await axios.get(url, { 
+        maxRedirects: 5,
+        timeout: 30000
+      });
+      console.log(`>>> Fetched ${type} count:`, Array.isArray(response.data) ? response.data.length : "Not an array");
       res.json(response.data);
     } catch (e: any) {
       console.error(`>>> Fetch Error (${type}):`, e.message);
-      res.status(500).json({ error: "Error al obtener datos de Google Sheets" });
+      res.status(500).json({ 
+        error: "Error al obtener datos de Google Sheets",
+        details: e.message
+      });
     }
   });
 
