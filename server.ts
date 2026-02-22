@@ -53,29 +53,73 @@ async function startServer() {
     next();
   });
 
+  // Middleware to check auth via JWT
+  const checkAuth = (req: any, res: any, next: any) => {
+    console.log(`>>> checkAuth check for: ${req.method} ${req.url}`);
+    if (!GOOGLE_CLIENT_ID) {
+      console.log(">>> Auth skipped: GOOGLE_CLIENT_ID not set");
+      return next();
+    }
+    
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.log(">>> Auth failed: No Bearer token in header");
+      return res.status(401).json({ error: "No autorizado" });
+    }
+    const token = authHeader.split(' ')[1];
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      req.user = decoded;
+      next();
+    } catch (e) {
+      console.error(">>> Auth failed: Invalid JWT", e);
+      res.status(401).json({ error: "Sesión expirada" });
+    }
+  };
+
+  const apiRouter = express.Router();
+
   // Test Route
-  app.all("/api/test", (req, res) => {
-    console.log(`>>> Test route hit: ${req.method} ${req.url}`);
-    res.json({ method: req.method, url: req.url, time: new Date().toISOString() });
+  apiRouter.all("/test", (req, res) => {
+    console.log(`>>> Test API route hit: ${req.method} ${req.url}`);
+    res.json({ status: "ok", method: req.method, time: new Date().toISOString() });
   });
 
-  // Debug/Ping Route
-  app.get("/api/ping", (req, res) => res.json({ 
-    status: "ok", 
-    timestamp: new Date().toISOString(),
-    env: process.env.NODE_ENV,
-    hasGoogleId: !!GOOGLE_CLIENT_ID
-  }));
+  // Config Route
+  apiRouter.get("/config", (req, res) => {
+    res.json({
+      hasPatientsUrl: !!PATIENTS_URL,
+      hasConsultationsUrl: !!CONSULTATIONS_URL,
+      isAuthConfigured: !!GOOGLE_CLIENT_ID
+    });
+  });
 
-  // Auth Routes
-  app.get("/api/auth/google/url", (req, res) => {
+  // Auth Status
+  apiRouter.get("/auth/me", (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.json(null);
+    const token = authHeader.split(' ')[1];
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      res.json(decoded);
+    } catch (e) {
+      res.json(null);
+    }
+  });
+
+  // Auth Logout
+  apiRouter.post("/auth/logout", (req, res) => {
+    res.json({ success: true });
+  });
+
+  // Google Auth URL
+  apiRouter.get("/auth/google/url", (req, res) => {
     console.log(">>> Generating Auth URL...");
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
       console.error(">>> Google OAuth credentials missing!");
       return res.status(500).json({ error: "Google OAuth not configured" });
     }
     const redirectUri = `${APP_URL}/auth/callback`;
-    console.log(">>> Redirect URI:", redirectUri);
     const url = client.generateAuthUrl({
       access_type: 'offline',
       scope: ['https://www.googleapis.com/auth/userinfo.profile', 'https://www.googleapis.com/auth/userinfo.email'],
@@ -84,6 +128,69 @@ async function startServer() {
     res.json({ url });
   });
 
+  // Proxy POST (Create/Update)
+  apiRouter.post("/proxy", checkAuth, async (req, res) => {
+    const { type, data } = req.body;
+    const url = type === "patient" ? PATIENTS_URL : CONSULTATIONS_URL;
+    
+    console.log(`>>> Proxy POST to ${type}:`, url);
+    try {
+      const response = await axios({
+        method: 'post',
+        url: url,
+        data: JSON.stringify({ ...data, action: 'upsert' }),
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        maxRedirects: 5,
+        timeout: 30000
+      });
+      
+      let finalData = response.data;
+      if (!finalData) {
+        finalData = { status: "success", message: "OK" };
+      } else if (typeof finalData === 'string') {
+        try { finalData = JSON.parse(finalData); } catch (e) { finalData = { status: "success", raw: finalData }; }
+      }
+      res.json(finalData);
+    } catch (e: any) {
+      console.error(`>>> Proxy Error:`, e.message);
+      res.status(500).json({ error: "Error de comunicación con Google Sheets", details: e.message });
+    }
+  });
+
+  // Data GET
+  apiRouter.get("/data/:type", checkAuth, async (req, res) => {
+    const { type } = req.params;
+    const url = type === "patients" ? PATIENTS_URL : CONSULTATIONS_URL;
+    try {
+      const response = await axios.get(url, { maxRedirects: 5, timeout: 30000 });
+      res.json(response.data);
+    } catch (e: any) {
+      res.status(500).json({ error: "Error al obtener datos", details: e.message });
+    }
+  });
+
+  // Data DELETE
+  apiRouter.delete("/data/:type/:id", checkAuth, async (req, res) => {
+    const { type, id } = req.params;
+    const url = type === "patients" ? PATIENTS_URL : CONSULTATIONS_URL;
+    try {
+      const response = await axios({
+        method: 'post',
+        url: url,
+        data: JSON.stringify({ id, action: 'delete' }),
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        maxRedirects: 5
+      });
+      res.json(response.data);
+    } catch (e: any) {
+      res.status(500).json({ error: "Error al eliminar" });
+    }
+  });
+
+  // Mount API Router
+  app.use("/api", apiRouter);
+
+  // Auth Callback (Non-API, handles HTML response)
   app.get("/auth/callback", async (req, res) => {
     console.log(">>> Auth Callback received...");
     const { code } = req.query;
@@ -149,148 +256,7 @@ async function startServer() {
     }
   });
 
-  app.get("/api/auth/me", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.json(null);
-    }
-    const token = authHeader.split(' ')[1];
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      res.json(decoded);
-    } catch (e) {
-      res.json(null);
-    }
-  });
-
-  app.post("/api/auth/logout", (req, res) => {
-    res.json({ success: true });
-  });
-
-  app.get("/api/config", (req, res) => {
-    res.json({
-      hasPatientsUrl: !!PATIENTS_URL,
-      hasConsultationsUrl: !!CONSULTATIONS_URL,
-      isAuthConfigured: !!GOOGLE_CLIENT_ID
-    });
-  });
-
-  // Middleware to check auth via JWT
-  const checkAuth = (req: any, res: any, next: any) => {
-    console.log(`>>> checkAuth check for: ${req.method} ${req.url}`);
-    if (!GOOGLE_CLIENT_ID) {
-      console.log(">>> Auth skipped: GOOGLE_CLIENT_ID not set");
-      return next();
-    }
-    
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log(">>> Auth failed: No Bearer token in header");
-      return res.status(401).json({ error: "No autorizado" });
-    }
-    const token = authHeader.split(' ')[1];
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      req.user = decoded;
-      next();
-    } catch (e) {
-      console.error(">>> Auth failed: Invalid JWT", e);
-      res.status(401).json({ error: "Sesión expirada" });
-    }
-  };
-
-  // Direct Proxy to Google Sheets (Create/Update)
-  app.post(["/api/proxy", "/api/proxy/"], (req, res, next) => {
-    console.log(">>> POST /api/proxy matched");
-    next();
-  }, checkAuth, async (req, res) => {
-    const { type, data } = req.body;
-    const url = type === "patient" ? PATIENTS_URL : CONSULTATIONS_URL;
-    
-    console.log(`>>> Proxy POST to ${type}:`, url);
-    console.log(`>>> Data:`, JSON.stringify(data).substring(0, 100) + "...");
-
-    try {
-      const response = await axios({
-        method: 'post',
-        url: url,
-        data: JSON.stringify({ ...data, action: 'upsert' }),
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        maxRedirects: 5,
-        timeout: 30000 // 30 seconds timeout
-      });
-      
-      console.log(`>>> Google Sheets Response (${type}):`, response.data);
-      
-      // Ensure we return an object, even if response.data is empty or not JSON
-      let finalData = response.data;
-      if (!finalData) {
-        finalData = { status: "success", message: "Operación completada (sin respuesta del servidor)" };
-      } else if (typeof finalData === 'string') {
-        try {
-          finalData = JSON.parse(finalData);
-        } catch (e) {
-          finalData = { status: "success", message: "Operación completada", raw: finalData };
-        }
-      }
-      
-      res.json(finalData);
-    } catch (e: any) {
-      console.error(`>>> Google Sheets Proxy Error (${type}):`, e.message);
-      if (e.response) {
-        console.error(`>>> Response data:`, e.response.data);
-        console.error(`>>> Response status:`, e.response.status);
-      }
-      res.status(500).json({ 
-        error: "Error de comunicación con Google Sheets", 
-        details: e.message,
-        url: url.substring(0, 30) + "..."
-      });
-    }
-  });
-
-  // Direct Fetch from Google Sheets
-  app.get(["/api/data/:type", "/api/data/:type/"], checkAuth, async (req, res) => {
-    const { type } = req.params;
-    const url = type === "patients" ? PATIENTS_URL : CONSULTATIONS_URL;
-    
-    console.log(`>>> Proxy GET ${type} from:`, url);
-
-    try {
-      const response = await axios.get(url, { 
-        maxRedirects: 5,
-        timeout: 30000
-      });
-      console.log(`>>> Fetched ${type} count:`, Array.isArray(response.data) ? response.data.length : "Not an array");
-      res.json(response.data);
-    } catch (e: any) {
-      console.error(`>>> Fetch Error (${type}):`, e.message);
-      res.status(500).json({ 
-        error: "Error al obtener datos de Google Sheets",
-        details: e.message
-      });
-    }
-  });
-
-  // Delete from Google Sheets
-  app.delete(["/api/data/:type/:id", "/api/data/:type/:id/"], checkAuth, async (req, res) => {
-    const { type, id } = req.params;
-    const url = type === "patients" ? PATIENTS_URL : CONSULTATIONS_URL;
-    
-    try {
-      const response = await axios({
-        method: 'post',
-        url: url,
-        data: JSON.stringify({ id, action: 'delete' }),
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        maxRedirects: 5
-      });
-      res.json(response.data);
-    } catch (e: any) {
-      res.status(500).json({ error: "Error al eliminar en Google Sheets" });
-    }
-  });
-
+  // Production / Development serving
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
