@@ -149,6 +149,7 @@ async function startServer() {
     
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.log(">>> Auth failed: No Bearer token");
       return res.status(401).json({ error: "No autorizado" });
     }
     const token = authHeader.split(' ')[1];
@@ -157,6 +158,7 @@ async function startServer() {
       req.user = decoded;
       next();
     } catch (e) {
+      console.error(">>> Auth failed: Invalid JWT", e);
       res.status(401).json({ error: "Sesión expirada" });
     }
   };

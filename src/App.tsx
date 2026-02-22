@@ -302,7 +302,7 @@ export default function App() {
     if (!confirm('¿Estás seguro de que quieres eliminar este registro permanentemente de Google Sheets?')) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/data/${type}/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/data/${type}/${id}`, { method: 'DELETE' });
       if (res.ok) {
         setStatus({ type: 'success', message: 'Registro eliminado correctamente' });
         if (type === 'patients') setPatientSubView('list');
@@ -1333,7 +1333,7 @@ function doGet() {
                     onClick={async () => {
                       setLoading(true);
                       try {
-                        const res = await fetch('/api/config');
+                        const res = await apiFetch('/api/config');
                         const data = await res.json();
                         setConfig(data);
                         setStatus({ type: 'success', message: 'Conexión verificada con Google Sheets.' });
