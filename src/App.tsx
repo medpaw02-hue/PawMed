@@ -245,7 +245,16 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'patient', data: newPatient })
       });
-      const result = await res.json();
+      
+      const text = await res.text();
+      let result;
+      try {
+        result = JSON.parse(text);
+      } catch (e) {
+        console.error(">>> Non-JSON response from proxy:", text);
+        throw new Error(`El servidor devolvió una respuesta no válida. Status: ${res.status}`);
+      }
+
       if (res.ok) {
         setStatus({ type: 'success', message: isEditing ? 'Paciente actualizado correctamente' : 'Paciente guardado correctamente' });
         setPatientForm({});
@@ -274,7 +283,16 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'consultation', data: newConsultation })
       });
-      const result = await res.json();
+      
+      const text = await res.text();
+      let result;
+      try {
+        result = JSON.parse(text);
+      } catch (e) {
+        console.error(">>> Non-JSON response from proxy:", text);
+        throw new Error(`El servidor devolvió una respuesta no válida. Status: ${res.status}`);
+      }
+
       if (res.ok) {
         setStatus({ type: 'success', message: isEditing ? 'Consulta actualizada correctamente' : 'Consulta registrada correctamente' });
         setConsultationForm({});

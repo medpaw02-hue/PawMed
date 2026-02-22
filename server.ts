@@ -194,7 +194,20 @@ async function startServer() {
       });
       
       console.log(`>>> Google Sheets Response (${type}):`, response.data);
-      res.json(response.data);
+      
+      // Ensure we return an object, even if response.data is empty or not JSON
+      let finalData = response.data;
+      if (!finalData) {
+        finalData = { status: "success", message: "Operación completada (sin respuesta del servidor)" };
+      } else if (typeof finalData === 'string') {
+        try {
+          finalData = JSON.parse(finalData);
+        } catch (e) {
+          finalData = { status: "success", message: "Operación completada", raw: finalData };
+        }
+      }
+      
+      res.json(finalData);
     } catch (e: any) {
       console.error(`>>> Google Sheets Proxy Error (${type}):`, e.message);
       if (e.response) {
