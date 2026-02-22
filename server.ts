@@ -4,8 +4,6 @@ import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
-import { OAuth2Client } from "google-auth-library";
-import jwt from "jsonwebtoken";
 
 dotenv.config();
 
@@ -27,20 +25,6 @@ const isValidUrl = (url: string) => {
 if (!isValidUrl(PATIENTS_URL)) console.warn(">>> WARNING: PATIENTS_URL is not a valid URL!");
 if (!isValidUrl(CONSULTATIONS_URL)) console.warn(">>> WARNING: CONSULTATIONS_URL is not a valid URL!");
 
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-let APP_URL = process.env.APP_URL || "http://localhost:3000";
-if (APP_URL.endsWith('/')) APP_URL = APP_URL.slice(0, -1);
-
-console.log(">>> Auth Config:", { 
-  hasClientId: !!GOOGLE_CLIENT_ID, 
-  hasClientSecret: !!GOOGLE_CLIENT_SECRET,
-  APP_URL 
-});
-
-const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
-const JWT_SECRET = process.env.SESSION_SECRET || 'pawmed-jwt-secret-123';
-
 async function startServer() {
   console.log(">>> Starting server...");
   const app = express();
@@ -53,35 +37,10 @@ async function startServer() {
     next();
   });
 
-  // Middleware to check auth via JWT
-  const checkAuth = (req: any, res: any, next: any) => {
-    console.log(`>>> checkAuth check for: ${req.method} ${req.url}`);
-    if (!GOOGLE_CLIENT_ID) {
-      console.log(">>> Auth skipped: GOOGLE_CLIENT_ID not set");
-      return next();
-    }
-    
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log(">>> Auth failed: No Bearer token in header");
-      return res.status(401).json({ error: "No autorizado" });
-    }
-    const token = authHeader.split(' ')[1];
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      req.user = decoded;
-      next();
-    } catch (e) {
-      console.error(">>> Auth failed: Invalid JWT", e);
-      res.status(401).json({ error: "Sesión expirada" });
-    }
-  };
-
   const apiRouter = express.Router();
 
   // Test Route
   apiRouter.all("/test", (req, res) => {
-    console.log(`>>> Test API route hit: ${req.method} ${req.url}`);
     res.json({ status: "ok", method: req.method, time: new Date().toISOString() });
   });
 
@@ -90,50 +49,15 @@ async function startServer() {
     res.json({
       hasPatientsUrl: !!PATIENTS_URL,
       hasConsultationsUrl: !!CONSULTATIONS_URL,
-      isAuthConfigured: !!GOOGLE_CLIENT_ID
+      isAuthConfigured: false
     });
-  });
-
-  // Auth Status
-  apiRouter.get("/auth/me", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.json(null);
-    const token = authHeader.split(' ')[1];
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      res.json(decoded);
-    } catch (e) {
-      res.json(null);
-    }
-  });
-
-  // Auth Logout
-  apiRouter.post("/auth/logout", (req, res) => {
-    res.json({ success: true });
-  });
-
-  // Google Auth URL
-  apiRouter.get("/auth/google/url", (req, res) => {
-    console.log(">>> Generating Auth URL...");
-    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      console.error(">>> Google OAuth credentials missing!");
-      return res.status(500).json({ error: "Google OAuth not configured" });
-    }
-    const redirectUri = `${APP_URL}/auth/callback`;
-    const url = client.generateAuthUrl({
-      access_type: 'offline',
-      scope: ['https://www.googleapis.com/auth/userinfo.profile', 'https://www.googleapis.com/auth/userinfo.email'],
-      redirect_uri: redirectUri
-    });
-    res.json({ url });
   });
 
   // Proxy POST (Create/Update)
-  apiRouter.post("/proxy", checkAuth, async (req, res) => {
+  apiRouter.post("/proxy", async (req, res) => {
     const { type, data } = req.body;
     const url = type === "patient" ? PATIENTS_URL : CONSULTATIONS_URL;
     
-    console.log(`>>> Proxy POST to ${type}:`, url);
     try {
       const response = await axios({
         method: 'post',
@@ -158,7 +82,7 @@ async function startServer() {
   });
 
   // Data GET
-  apiRouter.get("/data/:type", checkAuth, async (req, res) => {
+  apiRouter.get("/data/:type", async (req, res) => {
     const { type } = req.params;
     const url = type === "patients" ? PATIENTS_URL : CONSULTATIONS_URL;
     try {
@@ -170,7 +94,7 @@ async function startServer() {
   });
 
   // Data DELETE
-  apiRouter.delete("/data/:type/:id", checkAuth, async (req, res) => {
+  apiRouter.delete("/data/:type/:id", async (req, res) => {
     const { type, id } = req.params;
     const url = type === "patients" ? PATIENTS_URL : CONSULTATIONS_URL;
     try {
@@ -190,72 +114,6 @@ async function startServer() {
   // Mount API Router
   app.use("/api", apiRouter);
 
-  // Auth Callback (Non-API, handles HTML response)
-  app.get("/auth/callback", async (req, res) => {
-    console.log(">>> Auth Callback received...");
-    const { code } = req.query;
-    const redirectUri = `${APP_URL}/auth/callback`;
-    try {
-      const { tokens } = await client.getToken({
-        code: code as string,
-        redirect_uri: redirectUri
-      });
-      console.log(">>> Tokens received");
-      client.setCredentials(tokens);
-      
-      const ticket = await client.verifyIdToken({
-        idToken: tokens.id_token!,
-        audience: GOOGLE_CLIENT_ID
-      });
-      const payload = ticket.getPayload();
-      console.log(">>> User verified:", payload?.email);
-      
-      const user = {
-        id: payload?.sub,
-        email: payload?.email,
-        name: payload?.name,
-        picture: payload?.picture
-      };
-
-      const token = jwt.sign(user, JWT_SECRET, { expiresIn: '24h' });
-      console.log(">>> JWT Generated for:", user.email);
-
-      res.send(`
-        <html>
-          <body>
-            <script>
-              console.log(">>> Auth Success! Sending token...");
-              try {
-                if (window.opener) {
-                  window.opener.postMessage({ 
-                    type: 'OAUTH_AUTH_SUCCESS', 
-                    token: '${token}',
-                    user: ${JSON.stringify(user)}
-                  }, '*');
-                  console.log(">>> Message sent. Closing in 1s...");
-                  setTimeout(() => window.close(), 1000);
-                } else {
-                  console.log(">>> No opener found, redirecting...");
-                  window.location.href = '/?token=${token}';
-                }
-              } catch (err) {
-                console.error(">>> PostMessage error:", err);
-                window.location.href = '/?token=${token}';
-              }
-            </script>
-            <div style="font-family: sans-serif; text-align: center; padding-top: 50px;">
-              <h2 style="color: #e11d48;">¡Autenticación Exitosa!</h2>
-              <p>Sincronizando con la aplicación...</p>
-            </div>
-          </body>
-        </html>
-      `);
-    } catch (e) {
-      console.error(">>> OAuth Error:", e);
-      res.status(500).send("Error de autenticación: " + (e as any).message);
-    }
-  });
-
   // Production / Development serving
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
@@ -267,15 +125,11 @@ async function startServer() {
 
   // Catch-all for unhandled POST/PUT/DELETE
   app.use("/api", (req, res) => {
-    console.log(`>>> Unhandled API request: ${req.method} ${req.url}`);
     res.status(404).json({ error: "API route not found", method: req.method, url: req.url });
   });
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`>>> Server v1.0.4 running on port ${PORT}`);
-    console.log(`>>> NODE_ENV: ${process.env.NODE_ENV}`);
-    console.log(`>>> PATIENTS_URL configured: ${!!PATIENTS_URL}`);
-    console.log(`>>> CONSULTATIONS_URL configured: ${!!CONSULTATIONS_URL}`);
+    console.log(`>>> Server running on port ${PORT}`);
   });
 }
 

@@ -11,14 +11,12 @@ import {
   ExternalLink,
   Copy,
   Info,
-  Download,
-  LogOut,
-  User as UserIcon
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
-import 'jspdf-autotable';
-import { Patient, Consultation, User } from './types';
+import autoTable from 'jspdf-autotable';
+import { Patient, Consultation } from './types';
 
 console.log(">>> App component loading...");
 
@@ -67,9 +65,6 @@ const TextArea = ({ label, ...props }: any) => (
 // --- Main App ---
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(localStorage.getItem('pawmed_token'));
-  const [authLoading, setAuthLoading] = useState(false);
   const [view, setView] = useState<'home' | 'patients' | 'consultations' | 'setup'>('home');
   const [patientSubView, setPatientSubView] = useState<'menu' | 'form' | 'list' | 'detail'>('menu');
   const [consultationSubView, setConsultationSubView] = useState<'menu' | 'form' | 'list'>('menu');
@@ -85,119 +80,15 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
-    // Check for token in URL (fallback for some environments)
-    const urlParams = new URLSearchParams(window.location.search);
-    const urlToken = urlParams.get('token');
-    if (urlToken) {
-      localStorage.setItem('pawmed_token', urlToken);
-      setToken(urlToken);
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-    
-    checkAuth();
     fetchConfig();
   }, []);
 
   useEffect(() => {
-    if (user) {
-      fetchData();
-    }
-  }, [view, patientSubView, consultationSubView, user]);
-
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
-        console.log(">>> OAuth Success message received with token");
-        const newToken = event.data.token;
-        if (newToken) {
-          localStorage.setItem('pawmed_token', newToken);
-          setToken(newToken);
-          setUser(event.data.user);
-          setStatus({ type: 'success', message: `¡Bienvenido, ${event.data.user.name}!` });
-        } else {
-          checkAuth();
-        }
-      }
-    };
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
+    fetchData();
+  }, [view, patientSubView, consultationSubView]);
 
   const apiFetch = async (url: string, options: any = {}) => {
-    const currentToken = token || localStorage.getItem('pawmed_token');
-    const headers = {
-      ...options.headers,
-      'Authorization': currentToken ? `Bearer ${currentToken}` : ''
-    };
-    return fetch(url, { ...options, headers });
-  };
-
-  const checkAuth = async () => {
-    const currentToken = token || localStorage.getItem('pawmed_token');
-    if (!currentToken) {
-      console.log(">>> No token found in storage");
-      return;
-    }
-
-    console.log(">>> Checking auth state with JWT...");
-    setAuthLoading(true);
-    try {
-      const res = await apiFetch('/api/auth/me');
-      if (!res.ok) throw new Error("Error en la respuesta del servidor");
-      const data = await res.json();
-      console.log(">>> Auth data received:", data);
-      if (data) {
-        setUser(data);
-        setStatus({ type: 'success', message: `¡Bienvenido, ${data.name}!` });
-      } else {
-        localStorage.removeItem('pawmed_token');
-        setToken(null);
-      }
-    } catch (e: any) {
-      console.error("Auth check failed:", e);
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const handleLogin = async () => {
-    setAuthLoading(true);
-    try {
-      const res = await apiFetch('/api/auth/google/url');
-      const { url, error } = await res.json();
-      if (error) throw new Error(error);
-      
-      console.log(">>> Opening OAuth popup:", url);
-      const popup = window.open(url, 'google_login', 'width=500,height=600');
-      
-      if (!popup) {
-        throw new Error("El navegador bloqueó la ventana emergente. Por favor, permite las ventanas emergentes para este sitio.");
-      }
-
-      const checkInterval = setInterval(() => {
-        if (popup.closed) {
-          console.log(">>> Popup closed, checking auth...");
-          clearInterval(checkInterval);
-          checkAuth();
-        }
-      }, 2000);
-    } catch (e: any) {
-      console.error("Login failed:", e);
-      setStatus({ type: 'error', message: e.message });
-      setAuthLoading(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      await apiFetch('/api/auth/logout', { method: 'POST' });
-      localStorage.removeItem('pawmed_token');
-      setToken(null);
-      setUser(null);
-      setView('home');
-    } catch (e) {
-      console.error("Logout failed:", e);
-    }
+    return fetch(url, options);
   };
 
   const fetchConfig = async () => {
@@ -214,7 +105,7 @@ export default function App() {
   };
 
   const fetchData = async () => {
-    if (view === 'home' || view === 'setup' || !user) return;
+    if (view === 'home' || view === 'setup') return;
     setLoading(true);
     try {
       const [pRes, cRes] = await Promise.all([
@@ -258,7 +149,7 @@ export default function App() {
       if (res.ok) {
         setStatus({ type: 'success', message: isEditing ? 'Paciente actualizado correctamente' : 'Paciente guardado correctamente' });
         setPatientForm({});
-        setPatientSubView('detail');
+        setPatientSubView('list');
         fetchData();
       } else {
         const errorMsg = result.error || result.details || 'Error desconocido';
@@ -340,9 +231,14 @@ export default function App() {
   };
 
   const handlePrintReport = (patient: Patient, patientConsultations: Consultation[]) => {
-    const doc = new jsPDF() as any;
-    
-    // Header
+    try {
+      console.log(">>> Generating PDF report...");
+      const doc = new jsPDF();
+      
+      if (typeof autoTable !== 'function') {
+        console.error(">>> autoTable is not a function!", autoTable);
+        throw new Error("Error interno: No se pudo cargar el generador de tablas.");
+      }
     doc.setFillColor(225, 29, 72);
     doc.rect(0, 0, 210, 40, 'F');
     doc.setTextColor(255, 255, 255);
@@ -359,15 +255,36 @@ export default function App() {
     doc.setTextColor(100, 116, 139);
     doc.text('DATOS DEL PACIENTE', 20, 65);
     
-    doc.autoTable({
+    autoTable(doc, {
       startY: 70,
-      head: [['Especie', 'Raza', 'Edad', 'Propietario', 'Contacto']],
+      head: [['Especie', 'Raza', 'Edad', 'Sexo', 'Esterilizado', 'Color']],
       body: [[
         patient.especie,
         patient.raza,
         patient.edad,
+        patient.sexo || '-',
+        patient.esterilizado || '-',
+        patient.color || '-'
+      ]],
+      theme: 'grid',
+      headStyles: { fillColor: [248, 250, 252], textColor: [100, 116, 139], fontStyle: 'bold' },
+      styles: { fontSize: 9 }
+    });
+
+    const finalY0 = (doc as any).lastAutoTable.finalY;
+    doc.setFontSize(10);
+    doc.setTextColor(100, 116, 139);
+    doc.text('DATOS DEL PROPIETARIO', 20, finalY0 + 10);
+
+    autoTable(doc, {
+      startY: finalY0 + 15,
+      head: [['Nombre', 'Cédula', 'Teléfono', 'Email', 'Dirección']],
+      body: [[
         patient.propietario,
-        `${patient.telefono}\n${patient.email}`
+        patient.cedula || '-',
+        patient.telefono,
+        patient.email,
+        patient.direccion || '-'
       ]],
       theme: 'grid',
       headStyles: { fillColor: [248, 250, 252], textColor: [100, 116, 139], fontStyle: 'bold' },
@@ -377,17 +294,18 @@ export default function App() {
     // History
     doc.setFontSize(10);
     doc.setTextColor(100, 116, 139);
-    doc.text('HISTORIAL DE CONSULTAS', 20, doc.lastAutoTable.finalY + 15);
+    const finalY1 = (doc as any).lastAutoTable.finalY;
+    doc.text('HISTORIAL DE CONSULTAS', 20, finalY1 + 15);
 
     const historyBody = patientConsultations.map(c => [
       new Date(c.fecha).toLocaleDateString(),
       c.motivo,
-      `${c.diagnostico}\nTratamiento: ${c.tratamiento}`,
+      `${c.diagnosticoDefinitivo || c.diagnosticoPresuntivo || 'N/A'}\nTratamiento: ${c.tratamiento}`,
       `$${c.valor || '0.00'}`
     ]);
 
-    doc.autoTable({
-      startY: doc.lastAutoTable.finalY + 20,
+    autoTable(doc, {
+      startY: finalY1 + 20,
       head: [['Fecha', 'Motivo', 'Detalle Médico', 'Valor']],
       body: historyBody,
       theme: 'striped',
@@ -400,75 +318,98 @@ export default function App() {
     doc.text(`Generado por PawMed el ${new Date().toLocaleString()}`, 20, 285);
 
     doc.save(`Reporte_${(patient.nombre || 'Paciente').replace(/[^a-z0-9]/gi, '_')}_${new Date().getTime()}.pdf`);
+    } catch (error: any) {
+      console.error(">>> PDF Generation Error:", error);
+      setStatus({ type: 'error', message: `No se pudo generar el PDF: ${error.message}` });
+    }
   };
 
   const handlePrintConsultation = (patient: Patient, c: Consultation) => {
-    const doc = new jsPDF() as any;
-    
-    // Header
-    doc.setFillColor(225, 29, 72);
-    doc.rect(0, 0, 210, 40, 'F');
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(24);
-    doc.setFont('helvetica', 'bold');
-    doc.text('PawMed - Resumen de Consulta', 20, 25);
-    
-    // Patient & Date
-    doc.setTextColor(51, 65, 85);
-    doc.setFontSize(14);
-    doc.text(`Paciente: ${patient.nombre}`, 20, 55);
-    doc.text(`Fecha: ${new Date(c.fecha).toLocaleDateString()}`, 140, 55);
-    
-    // Details
-    doc.setFontSize(10);
-    doc.setTextColor(100, 116, 139);
-    doc.text('MOTIVO DE CONSULTA', 20, 70);
-    doc.setTextColor(51, 65, 85);
-    doc.setFontSize(12);
-    doc.text(c.motivo, 20, 78);
-
-    doc.setFontSize(10);
-    doc.setTextColor(100, 116, 139);
-    doc.text('DIAGNÓSTICO', 20, 95);
-    doc.setTextColor(51, 65, 85);
-    doc.setFontSize(11);
-    const diagLines = doc.splitTextToSize(c.diagnostico || 'N/A', 170);
-    doc.text(diagLines, 20, 103);
-
-    doc.setFontSize(10);
-    doc.setTextColor(100, 116, 139);
-    doc.text('TRATAMIENTO / RECETA', 20, 130);
-    doc.setTextColor(225, 29, 72);
-    doc.setFontSize(11);
-    const treatLines = doc.splitTextToSize(c.tratamiento || 'N/A', 170);
-    doc.text(treatLines, 20, 138);
-
-    if (c.notas) {
+    try {
+      console.log(">>> Generating Consultation PDF...");
+      const doc = new jsPDF();
+      
+      // Header
+      doc.setFillColor(225, 29, 72);
+      doc.rect(0, 0, 210, 40, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(24);
+      doc.setFont('helvetica', 'bold');
+      doc.text('PawMed - Resumen de Consulta', 20, 25);
+      
+      // Patient & Date
+      doc.setTextColor(51, 65, 85);
+      doc.setFontSize(14);
+      doc.text(`Paciente: ${patient.nombre}`, 20, 55);
+      doc.text(`Fecha: ${new Date(c.fecha).toLocaleDateString()}`, 140, 55);
+      
+      // Details
       doc.setFontSize(10);
       doc.setTextColor(100, 116, 139);
-      doc.text('NOTAS ADICIONALES', 20, 170);
+      doc.text('MOTIVO DE CONSULTA', 20, 70);
       doc.setTextColor(51, 65, 85);
+      doc.setFontSize(12);
+      doc.text(c.motivo, 20, 78);
+
+      // Examen Físico
       doc.setFontSize(10);
-      const noteLines = doc.splitTextToSize(c.notas, 170);
-      doc.text(noteLines, 20, 178);
+      doc.setTextColor(100, 116, 139);
+      doc.text('EXAMEN FÍSICO', 20, 95);
+      autoTable(doc, {
+        startY: 100,
+        body: [
+          ['Temp:', c.temperatura || '-', 'Peso:', c.peso || '-', 'C. Corporal:', c.condicionCorporal || '-'],
+          ['F. Cardíaca:', c.frecuenciaCardiaca || '-', 'F. Resp:', c.frecuenciaRespiratoria || '-', 'Mucosas:', c.mucosas || '-'],
+          ['T. Llenado:', c.tiempoLlenadoCapilar || '-', 'Ganglios:', c.ganglios || '-', 'R. Deglutorio:', c.reflejoDeglutorio || '-'],
+          ['R. Tusígeno:', c.reflejoTusigeno || '-', 'Hidratación:', c.estadoHidratacion || '-', '', '']
+        ],
+        theme: 'grid',
+        styles: { fontSize: 8 }
+      });
+
+      let currentY = (doc as any).lastAutoTable.finalY + 15;
+
+      const addSection = (title: string, content: string | undefined, color: number[] = [51, 65, 85]) => {
+        if (!content) return;
+        if (currentY > 260) { doc.addPage(); currentY = 20; }
+        doc.setFontSize(10);
+        doc.setTextColor(100, 116, 139);
+        doc.text(title, 20, currentY);
+        doc.setTextColor(color[0], color[1], color[2]);
+        doc.setFontSize(11);
+        const lines = doc.splitTextToSize(content, 170);
+        doc.text(lines, 20, currentY + 8);
+        currentY += (lines.length * 6) + 15;
+      };
+
+      addSection('HALLAZGOS', c.hallazgos);
+      addSection('DIAGNÓSTICO PRESUNTIVO', c.diagnosticoPresuntivo);
+      addSection('DIAGNÓSTICO DEFINITIVO', c.diagnosticoDefinitivo);
+      addSection('TRATAMIENTO', c.tratamiento, [225, 29, 72]);
+      addSection('INDICACIÓN Y EVOLUCIÓN', c.indicacionEvolucion);
+      addSection('NOTAS ADICIONALES', c.notas);
+
+      // Amount
+      if (currentY > 250) { doc.addPage(); currentY = 20; }
+      doc.setFillColor(248, 250, 252);
+      doc.rect(140, currentY, 50, 20, 'F');
+      doc.setTextColor(100, 116, 139);
+      doc.setFontSize(10);
+      doc.text('TOTAL COBRADO', 145, currentY + 8);
+      doc.setTextColor(225, 29, 72);
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`$${c.valor || '0.00'}`, 145, currentY + 16);
+
+      doc.setFontSize(8);
+      doc.setTextColor(148, 163, 184);
+      doc.text(`Generado por PawMed el ${new Date().toLocaleString()}`, 20, 285);
+
+      doc.save(`Consulta_${(patient.nombre || 'Paciente').replace(/[^a-z0-9]/gi, '_')}_${new Date(c.fecha).toLocaleDateString().replace(/\//g, '-')}.pdf`);
+    } catch (error: any) {
+      console.error(">>> PDF Generation Error:", error);
+      setStatus({ type: 'error', message: `No se pudo generar el PDF: ${error.message}` });
     }
-
-    // Amount
-    doc.setFillColor(248, 250, 252);
-    doc.rect(140, 200, 50, 20, 'F');
-    doc.setTextColor(100, 116, 139);
-    doc.setFontSize(10);
-    doc.text('TOTAL COBRADO', 145, 208);
-    doc.setTextColor(225, 29, 72);
-    doc.setFontSize(14);
-    doc.setFont('helvetica', 'bold');
-    doc.text(`$${c.valor || '0.00'}`, 145, 216);
-
-    doc.setFontSize(8);
-    doc.setTextColor(148, 163, 184);
-    doc.text(`Generado por PawMed el ${new Date().toLocaleString()}`, 20, 285);
-
-    doc.save(`Consulta_${(patient.nombre || 'Paciente').replace(/[^a-z0-9]/gi, '_')}_${new Date(c.fecha).toLocaleDateString().replace(/\//g, '-')}.pdf`);
   };
 
   const filteredPatients = patients.filter(p => 
@@ -483,60 +424,60 @@ export default function App() {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
     var contents = e.postData.contents;
     var data = JSON.parse(contents);
-    
-    if (sheet.getLastRow() === 0) {
-      // Define headers based on data keys, but ensure 'id' is present
-      var keys = Object.keys(data).filter(k => k !== 'action');
-      sheet.appendRow(keys);
-    }
-    
+    var action = data.action;
+    delete data.action;
+
     var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     var idIndex = headers.indexOf("id");
-
-    if (data.action === 'delete') {
+    
+    if (action === 'delete') {
       if (idIndex === -1) throw new Error("No se encontró la columna 'id'");
-      var values = sheet.getDataRange().getValues();
-      for (var i = 1; i < values.length; i++) {
-        if (values[i][idIndex] == data.id) {
+      var rows = sheet.getDataRange().getValues();
+      for (var i = 1; i < rows.length; i++) {
+        if (String(rows[i][idIndex]) === String(data.id)) {
           sheet.deleteRow(i + 1);
-          return ContentService.createTextOutput(JSON.stringify({ "status": "success", "message": "Eliminado" }))
-            .setMimeType(ContentService.MimeType.JSON);
+          return ContentService.createTextOutput(JSON.stringify({status: 'success'})).setMimeType(ContentService.MimeType.JSON);
         }
       }
-      return ContentService.createTextOutput(JSON.stringify({ "status": "error", "message": "ID no encontrado" }))
-        .setMimeType(ContentService.MimeType.JSON);
+      return ContentService.createTextOutput(JSON.stringify({status: 'error', message: 'ID no encontrado'})).setMimeType(ContentService.MimeType.JSON);
     }
-    
-    var newRow = headers.map(function(h) { return data[h] !== undefined ? data[h] : ""; });
-    
-    // UPSERT logic
-    if (idIndex !== -1 && data.id) {
-      var values = sheet.getDataRange().getValues();
-      for (var i = 1; i < values.length; i++) {
-        if (values[i][idIndex] == data.id) {
-          sheet.getRange(i + 1, 1, 1, headers.length).setValues([newRow]);
-          return ContentService.createTextOutput(JSON.stringify({ "status": "success", "message": "Actualizado" }))
-            .setMimeType(ContentService.MimeType.JSON);
+
+    // Upsert logic
+    var rows = sheet.getDataRange().getValues();
+    var rowIndex = -1;
+    if (idIndex !== -1) {
+      for (var i = 1; i < rows.length; i++) {
+        if (String(rows[i][idIndex]) === String(data.id)) {
+          rowIndex = i + 1;
+          break;
         }
       }
     }
-    
-    sheet.appendRow(newRow);
-    return ContentService.createTextOutput(JSON.stringify({ "status": "success", "message": "Guardado" }))
-      .setMimeType(ContentService.MimeType.JSON);
-  } catch (f) {
-    return ContentService.createTextOutput(JSON.stringify({ "status": "error", "message": f.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+
+    var rowValues = headers.map(function(h) { return data[h] !== undefined ? data[h] : ''; });
+    if (rowIndex > -1) {
+      sheet.getRange(rowIndex, 1, 1, headers.length).setValues([rowValues]);
+    } else {
+      sheet.appendRow(rowValues);
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({status: 'success'})).setMimeType(ContentService.MimeType.JSON);
+  } catch (e) {
+    return ContentService.createTextOutput(JSON.stringify({status: 'error', details: e.toString()})).setMimeType(ContentService.MimeType.JSON);
   } finally {
     lock.releaseLock();
   }
 }
 
+// NOTA: Asegúrate de que tu hoja de Google Sheets tenga los siguientes encabezados en la primera fila (exactamente así):
+// Para Pacientes: id, nombre, especie, raza, edad, propietario, telefono, email
+// Para Consultas: id, pacienteId, fecha, motivo, temperatura, peso, condicionCorporal, frecuenciaCardiaca, frecuenciaRespiratoria, mucosas, tiempoLlenadoCapilar, ganglios, reflejoDeglutorio, reflejoTusigeno, estadoHidratacion, hallazgos, diagnosticoPresuntivo, diagnosticoDefinitivo, tratamiento, indicacionEvolucion, valor, notas
+
 function doGet() {
   try {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
     if (sheet.getLastRow() === 0) {
-      sheet.appendRow(["id", "nombre", "especie", "raza", "edad", "propietario", "telefono", "email", "pacienteId", "fecha", "motivo", "diagnostico", "tratamiento", "valor", "notas"]);
+      sheet.appendRow(["id", "nombre", "edad", "especie", "raza", "color", "sexo", "esterilizado", "propietario", "cedula", "telefono", "direccion", "email", "notas", "pacienteId", "fecha", "motivo", "temperatura", "peso", "condicionCorporal", "frecuenciaCardiaca", "frecuenciaRespiratoria", "mucosas", "tiempoLlenadoCapilar", "ganglios", "reflejoDeglutorio", "reflejoTusigeno", "estadoHidratacion", "hallazgos", "diagnosticoPresuntivo", "diagnosticoDefinitivo", "tratamiento", "indicacionEvolucion", "valor"]);
     }
     var rows = sheet.getDataRange().getValues();
     if (rows.length < 2) return ContentService.createTextOutput("[]").setMimeType(ContentService.MimeType.JSON);
@@ -550,56 +491,8 @@ function doGet() {
   } catch (g) {
     return ContentService.createTextOutput(JSON.stringify({ "error": g.toString() })).setMimeType(ContentService.MimeType.JSON);
   }
-}`;
-
-  if (!user && config.isAuthConfigured) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
-        <Card className="max-w-md w-full p-10 text-center space-y-8 shadow-2xl">
-          <div className="w-20 h-20 bg-rose-100 text-rose-600 rounded-3xl flex items-center justify-center mx-auto shadow-inner">
-            <Stethoscope size={40} />
-          </div>
-          <div className="space-y-2">
-            <h1 className="text-4xl font-black text-slate-900 tracking-tight">PawMed</h1>
-            <p className="text-slate-500 font-medium">Gestión Veterinaria Profesional</p>
-          </div>
-          <div className="pt-4 space-y-4">
-            <button
-              onClick={handleLogin}
-              disabled={authLoading}
-              className="w-full flex items-center justify-center gap-3 bg-white border-2 border-slate-200 text-slate-700 py-4 rounded-2xl font-bold hover:bg-slate-50 hover:border-rose-200 transition-all shadow-sm group disabled:opacity-50"
-            >
-              <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5 group-hover:scale-110 transition-transform" />
-              {authLoading ? 'Procesando...' : 'Iniciar sesión con Google'}
-            </button>
-            
-            {authLoading ? (
-              <div className="flex flex-col items-center gap-2">
-                <div className="w-6 h-6 border-2 border-rose-600 border-t-transparent rounded-full animate-spin"></div>
-                <p className="text-xs text-slate-400 font-medium">Verificando sesión...</p>
-              </div>
-            ) : (
-              <button 
-                onClick={checkAuth}
-                className="text-xs text-rose-600 font-bold hover:underline bg-rose-50 px-4 py-2 rounded-lg transition-colors"
-              >
-                ¿Ya iniciaste sesión? Haz clic aquí para entrar
-              </button>
-            )}
-          </div>
-          <p className="text-xs text-slate-400">
-            Al iniciar sesión, aceptas nuestros términos de servicio y política de privacidad.
-          </p>
-          
-          <div className="pt-8 border-t border-slate-100">
-            <p className="text-[10px] text-slate-300 font-mono">
-              Debug: {window.location.protocol} // {window.location.hostname} | v1.0.2
-            </p>
-          </div>
-        </Card>
-      </div>
-    );
-  }
+}
+`;
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
@@ -620,22 +513,6 @@ function doGet() {
           </button>
 
           <div className="flex items-center gap-4">
-            {user && (
-              <div className="flex items-center gap-3 pr-4 border-r border-slate-100">
-                <div className="text-right hidden sm:block">
-                  <p className="text-xs font-bold text-slate-900">{user.name}</p>
-                  <p className="text-[10px] text-slate-400 font-medium">{user.email}</p>
-                </div>
-                <img src={user.picture} alt={user.name} className="w-8 h-8 rounded-full border border-slate-200" />
-                <button 
-                  onClick={handleLogout}
-                  className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
-                  title="Cerrar sesión"
-                >
-                  <LogOut size={18} />
-                </button>
-              </div>
-            )}
             <button 
               onClick={() => setView('setup')}
               className={`p-2 rounded-xl transition-colors ${view === 'setup' ? 'bg-rose-50 text-rose-600' : 'text-slate-400 hover:bg-slate-100'}`}
@@ -782,48 +659,92 @@ function doGet() {
                       {patientForm.id ? 'Editar Paciente' : 'Nuevo Registro de Paciente'}
                     </h2>
                     <form onSubmit={handleAddPatient} className="space-y-6">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <Input 
-                          label="Nombre del Paciente" 
-                          placeholder="Ej: Max" 
-                          required
-                          value={patientForm.nombre || ''}
-                          onChange={(e: any) => setPatientForm({...patientForm, nombre: e.target.value})}
-                        />
-                        <Input 
-                          label="Especie" 
-                          placeholder="Ej: Perro" 
-                          value={patientForm.especie || ''}
-                          onChange={(e: any) => setPatientForm({...patientForm, especie: e.target.value})}
-                        />
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <Input 
-                          label="Raza" 
-                          placeholder="Ej: Beagle" 
-                          value={patientForm.raza || ''}
-                          onChange={(e: any) => setPatientForm({...patientForm, raza: e.target.value})}
-                        />
-                        <Input 
-                          label="Edad" 
-                          placeholder="Ej: 3 años" 
-                          value={patientForm.edad || ''}
-                          onChange={(e: any) => setPatientForm({...patientForm, edad: e.target.value})}
-                        />
-                      </div>
-                      <div className="pt-4 border-t border-slate-100">
-                        <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Información del Propietario</h3>
-                        <div className="space-y-6">
+                      <div className="space-y-4">
+                        <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Datos del Paciente</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                           <Input 
-                            label="Nombre del Propietario" 
-                            placeholder="Nombre completo" 
-                            value={patientForm.propietario || ''}
-                            onChange={(e: any) => setPatientForm({...patientForm, propietario: e.target.value})}
+                            label="Nombre del Paciente" 
+                            placeholder="Ej: Max" 
+                            required
+                            value={patientForm.nombre || ''}
+                            onChange={(e: any) => setPatientForm({...patientForm, nombre: e.target.value})}
                           />
+                          <Input 
+                            label="Edad" 
+                            placeholder="Ej: 3 años" 
+                            value={patientForm.edad || ''}
+                            onChange={(e: any) => setPatientForm({...patientForm, edad: e.target.value})}
+                          />
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <Input 
+                            label="Especie" 
+                            placeholder="Ej: Perro" 
+                            value={patientForm.especie || ''}
+                            onChange={(e: any) => setPatientForm({...patientForm, especie: e.target.value})}
+                          />
+                          <Input 
+                            label="Raza" 
+                            placeholder="Ej: Beagle" 
+                            value={patientForm.raza || ''}
+                            onChange={(e: any) => setPatientForm({...patientForm, raza: e.target.value})}
+                          />
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                          <Input 
+                            label="Color" 
+                            placeholder="Ej: Blanco/Marrón" 
+                            value={patientForm.color || ''}
+                            onChange={(e: any) => setPatientForm({...patientForm, color: e.target.value})}
+                          />
+                          <div className="space-y-1">
+                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Sexo</label>
+                            <select
+                              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none transition-all"
+                              value={patientForm.sexo || ''}
+                              onChange={(e) => setPatientForm({...patientForm, sexo: e.target.value})}
+                            >
+                              <option value="">Seleccionar...</option>
+                              <option value="Macho">Macho</option>
+                              <option value="Hembra">Hembra</option>
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Esterilizado</label>
+                            <select
+                              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none transition-all"
+                              value={patientForm.esterilizado || ''}
+                              onChange={(e) => setPatientForm({...patientForm, esterilizado: e.target.value})}
+                            >
+                              <option value="">Seleccionar...</option>
+                              <option value="Sí">Sí</option>
+                              <option value="No">No</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="pt-4 space-y-4">
+                        <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Datos del Propietario</h3>
+                        <div className="space-y-6">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <Input 
+                              label="Nombre del Propietario" 
+                              placeholder="Nombre completo" 
+                              value={patientForm.propietario || ''}
+                              onChange={(e: any) => setPatientForm({...patientForm, propietario: e.target.value})}
+                            />
+                            <Input 
+                              label="Cédula / ID" 
+                              placeholder="Documento de identidad" 
+                              value={patientForm.cedula || ''}
+                              onChange={(e: any) => setPatientForm({...patientForm, cedula: e.target.value})}
+                            />
+                          </div>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <Input 
                               label="Teléfono" 
-                              placeholder="+34 ..." 
+                              placeholder="Ej: 09..." 
                               value={patientForm.telefono || ''}
                               onChange={(e: any) => setPatientForm({...patientForm, telefono: e.target.value})}
                             />
@@ -835,8 +756,24 @@ function doGet() {
                               onChange={(e: any) => setPatientForm({...patientForm, email: e.target.value})}
                             />
                           </div>
+                          <Input 
+                            label="Dirección" 
+                            placeholder="Dirección domiciliaria" 
+                            value={patientForm.direccion || ''}
+                            onChange={(e: any) => setPatientForm({...patientForm, direccion: e.target.value})}
+                          />
                         </div>
                       </div>
+
+                      <div className="pt-4">
+                        <TextArea 
+                          label="Notas" 
+                          placeholder="Información adicional relevante..." 
+                          value={patientForm.notas || ''}
+                          onChange={(e: any) => setPatientForm({...patientForm, notas: e.target.value})}
+                        />
+                      </div>
+
                       <div className="flex flex-wrap gap-4 pt-6">
                         <button
                           type="button"
@@ -885,19 +822,43 @@ function doGet() {
                         </div>
 
                         <div className="space-y-4 border-t border-slate-100 pt-6">
-                          <div>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Edad</p>
-                            <p className="text-slate-700 font-medium">{patientForm.edad}</p>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Edad</p>
+                              <p className="text-slate-700 font-medium">{patientForm.edad}</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Sexo</p>
+                              <p className="text-slate-700 font-medium">{patientForm.sexo || '-'}</p>
+                            </div>
                           </div>
-                          <div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Color</p>
+                              <p className="text-slate-700 font-medium">{patientForm.color || '-'}</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Esterilizado</p>
+                              <p className="text-slate-700 font-medium">{patientForm.esterilizado || '-'}</p>
+                            </div>
+                          </div>
+                          <div className="pt-2 border-t border-slate-50">
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Propietario</p>
                             <p className="text-slate-700 font-medium">{patientForm.propietario}</p>
+                            <p className="text-[10px] text-slate-400">CI: {patientForm.cedula || '-'}</p>
                           </div>
                           <div>
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Contacto</p>
                             <p className="text-slate-700 font-medium">{patientForm.telefono}</p>
                             <p className="text-slate-500 text-sm">{patientForm.email}</p>
+                            <p className="text-slate-500 text-xs mt-1">{patientForm.direccion || '-'}</p>
                           </div>
+                          {patientForm.notas && (
+                            <div className="pt-2 border-t border-slate-50">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Notas</p>
+                              <p className="text-slate-600 text-sm italic">{patientForm.notas}</p>
+                            </div>
+                          )}
                         </div>
 
                         <div className="grid grid-cols-1 gap-3 mt-8">
@@ -1119,48 +1080,106 @@ function doGet() {
                       {consultationForm.id ? 'Editar Consulta' : 'Nueva Consulta Médica'}
                     </h2>
                     <form onSubmit={handleAddConsultation} className="space-y-6">
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Paciente</label>
-                        <select
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Paciente</label>
+                          <select
+                            required
+                            disabled={!!consultationForm.id}
+                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 outline-none transition-all disabled:opacity-60"
+                            value={consultationForm.pacienteId || ''}
+                            onChange={(e) => setConsultationForm({...consultationForm, pacienteId: e.target.value})}
+                          >
+                            <option value="">Seleccionar paciente...</option>
+                            {patients.map(p => (
+                              <option key={p.id} value={p.id}>{p.nombre} ({p.propietario})</option>
+                            ))}
+                          </select>
+                        </div>
+                        <Input 
+                          label="Fecha" 
+                          type="date"
                           required
-                          disabled={!!consultationForm.id}
-                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500 outline-none transition-all disabled:opacity-60"
-                          value={consultationForm.pacienteId || ''}
-                          onChange={(e) => setConsultationForm({...consultationForm, pacienteId: e.target.value})}
-                        >
-                          <option value="">Seleccionar paciente...</option>
-                          {patients.map(p => (
-                            <option key={p.id} value={p.id}>{p.nombre} ({p.propietario})</option>
-                          ))}
-                        </select>
+                          value={consultationForm.fecha ? new Date(consultationForm.fecha).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]}
+                          onChange={(e: any) => setConsultationForm({...consultationForm, fecha: new Date(e.target.value).toISOString()})}
+                        />
                       </div>
-                      <Input 
-                        label="Motivo de Consulta" 
-                        placeholder="Ej: Vacunación" 
-                        required
-                        value={consultationForm.motivo || ''}
-                        onChange={(e: any) => setConsultationForm({...consultationForm, motivo: e.target.value})}
-                      />
-                      <Input 
-                        label="Valor de la Consulta ($)" 
-                        placeholder="Ej: 50.00" 
-                        type="number"
-                        step="0.01"
-                        value={consultationForm.valor || ''}
-                        onChange={(e: any) => setConsultationForm({...consultationForm, valor: e.target.value})}
-                      />
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <Input 
+                          label="Motivo de Consulta" 
+                          placeholder="Ej: Vacunación" 
+                          required
+                          value={consultationForm.motivo || ''}
+                          onChange={(e: any) => setConsultationForm({...consultationForm, motivo: e.target.value})}
+                        />
+                        <Input 
+                          label="Valor de la Consulta (USD)" 
+                          placeholder="Ej: 50.00" 
+                          type="number"
+                          step="0.01"
+                          value={consultationForm.valor || ''}
+                          onChange={(e: any) => setConsultationForm({...consultationForm, valor: e.target.value})}
+                        />
+                      </div>
+
+                      {/* Examen Físico Section */}
+                      <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 space-y-4">
+                        <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                          <Stethoscope size={16} className="text-rose-600" />
+                          Examen Físico
+                        </h3>
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                          <Input label="Temperatura (°C)" value={consultationForm.temperatura || ''} onChange={(e: any) => setConsultationForm({...consultationForm, temperatura: e.target.value})} />
+                          <Input label="Peso (kg)" value={consultationForm.peso || ''} onChange={(e: any) => setConsultationForm({...consultationForm, peso: e.target.value})} />
+                          <Input label="Condición Corporal" value={consultationForm.condicionCorporal || ''} onChange={(e: any) => setConsultationForm({...consultationForm, condicionCorporal: e.target.value})} />
+                          <Input label="Frec. Cardíaca" value={consultationForm.frecuenciaCardiaca || ''} onChange={(e: any) => setConsultationForm({...consultationForm, frecuenciaCardiaca: e.target.value})} />
+                          <Input label="Frec. Respiratoria" value={consultationForm.frecuenciaRespiratoria || ''} onChange={(e: any) => setConsultationForm({...consultationForm, frecuenciaRespiratoria: e.target.value})} />
+                          <Input label="Mucosas" value={consultationForm.mucosas || ''} onChange={(e: any) => setConsultationForm({...consultationForm, mucosas: e.target.value})} />
+                          <Input label="T. Llenado Capilar" value={consultationForm.tiempoLlenadoCapilar || ''} onChange={(e: any) => setConsultationForm({...consultationForm, tiempoLlenadoCapilar: e.target.value})} />
+                          <Input label="Ganglios" value={consultationForm.ganglios || ''} onChange={(e: any) => setConsultationForm({...consultationForm, ganglios: e.target.value})} />
+                          <Input label="Reflejo Deglutorio" value={consultationForm.reflejoDeglutorio || ''} onChange={(e: any) => setConsultationForm({...consultationForm, reflejoDeglutorio: e.target.value})} />
+                          <Input label="Reflejo Tusígeno" value={consultationForm.reflejoTusigeno || ''} onChange={(e: any) => setConsultationForm({...consultationForm, reflejoTusigeno: e.target.value})} />
+                          <Input label="Estado Hidratación" value={consultationForm.estadoHidratacion || ''} onChange={(e: any) => setConsultationForm({...consultationForm, estadoHidratacion: e.target.value})} />
+                        </div>
+                      </div>
+
                       <TextArea 
-                        label="Diagnóstico" 
-                        placeholder="Observaciones clínicas..." 
-                        value={consultationForm.diagnostico || ''}
-                        onChange={(e: any) => setConsultationForm({...consultationForm, diagnostico: e.target.value})}
+                        label="Hallazgos" 
+                        placeholder="Hallazgos durante el examen..." 
+                        value={consultationForm.hallazgos || ''}
+                        onChange={(e: any) => setConsultationForm({...consultationForm, hallazgos: e.target.value})}
                       />
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <TextArea 
+                          label="Diagnóstico Presuntivo" 
+                          placeholder="..." 
+                          value={consultationForm.diagnosticoPresuntivo || ''}
+                          onChange={(e: any) => setConsultationForm({...consultationForm, diagnosticoPresuntivo: e.target.value})}
+                        />
+                        <TextArea 
+                          label="Diagnóstico Definitivo" 
+                          placeholder="..." 
+                          value={consultationForm.diagnosticoDefinitivo || ''}
+                          onChange={(e: any) => setConsultationForm({...consultationForm, diagnosticoDefinitivo: e.target.value})}
+                        />
+                      </div>
+
                       <TextArea 
-                        label="Tratamiento / Receta" 
+                        label="Tratamiento" 
                         placeholder="Medicamentos, dosis..." 
                         value={consultationForm.tratamiento || ''}
                         onChange={(e: any) => setConsultationForm({...consultationForm, tratamiento: e.target.value})}
                       />
+
+                      <TextArea 
+                        label="Indicación y Evolución" 
+                        placeholder="..." 
+                        value={consultationForm.indicacionEvolucion || ''}
+                        onChange={(e: any) => setConsultationForm({...consultationForm, indicacionEvolucion: e.target.value})}
+                      />
+
                       <TextArea 
                         label="Notas Adicionales" 
                         placeholder="Seguimiento, etc." 
@@ -1291,11 +1310,11 @@ function doGet() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
                       <p className="text-xs font-bold text-slate-400 uppercase mb-2">Hoja de Pacientes</p>
-                      <code className="text-xs text-rose-700 break-all">id, nombre, especie, raza, edad, propietario, telefono, email</code>
+                      <code className="text-xs text-rose-700 break-all">id, nombre, edad, especie, raza, color, sexo, esterilizado, propietario, cedula, telefono, direccion, email, notas</code>
                     </div>
                     <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
                       <p className="text-xs font-bold text-slate-400 uppercase mb-2">Hoja de Consultas</p>
-                      <code className="text-xs text-rose-700 break-all">id, pacienteId, fecha, motivo, diagnostico, tratamiento, notas</code>
+                      <code className="text-xs text-rose-700 break-all">id, pacienteId, fecha, motivo, temperatura, peso, condicionCorporal, frecuenciaCardiaca, frecuenciaRespiratoria, mucosas, tiempoLlenadoCapilar, ganglios, reflejoDeglutorio, reflejoTusigeno, estadoHidratacion, hallazgos, diagnosticoPresuntivo, diagnosticoDefinitivo, tratamiento, indicacionEvolucion, valor, notas</code>
                     </div>
                   </div>
                 </div>
