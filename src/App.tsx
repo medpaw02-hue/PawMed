@@ -11,12 +11,14 @@ import {
   ExternalLink,
   Copy,
   Info,
-  Download
+  Download,
+  LogOut,
+  User as UserIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
-import { Patient, Consultation } from './types';
+import { Patient, Consultation, User } from './types';
 
 console.log(">>> App component loading...");
 
@@ -65,6 +67,9 @@ const TextArea = ({ label, ...props }: any) => (
 // --- Main App ---
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(localStorage.getItem('pawmed_token'));
+  const [authLoading, setAuthLoading] = useState(false);
   const [view, setView] = useState<'home' | 'patients' | 'consultations' | 'setup'>('home');
   const [patientSubView, setPatientSubView] = useState<'menu' | 'form' | 'list' | 'detail'>('menu');
   const [consultationSubView, setConsultationSubView] = useState<'menu' | 'form' | 'list'>('menu');
@@ -72,7 +77,7 @@ export default function App() {
   const [consultations, setConsultations] = useState<Consultation[]>([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
-  const [config, setConfig] = useState({ hasPatientsUrl: false, hasConsultationsUrl: false });
+  const [config, setConfig] = useState({ hasPatientsUrl: false, hasConsultationsUrl: false, isAuthConfigured: false });
 
   // Form States
   const [patientForm, setPatientForm] = useState<Partial<Patient>>({});
@@ -80,13 +85,124 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
+    // Check for token in URL (fallback for some environments)
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get('token');
+    if (urlToken) {
+      localStorage.setItem('pawmed_token', urlToken);
+      setToken(urlToken);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    
+    checkAuth();
     fetchConfig();
-    fetchData();
-  }, [view, patientSubView, consultationSubView]);
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      fetchData();
+    }
+  }, [view, patientSubView, consultationSubView, user]);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
+        console.log(">>> OAuth Success message received with token");
+        const newToken = event.data.token;
+        if (newToken) {
+          localStorage.setItem('pawmed_token', newToken);
+          setToken(newToken);
+          setUser(event.data.user);
+          setStatus({ type: 'success', message: `¡Bienvenido, ${event.data.user.name}!` });
+        } else {
+          checkAuth();
+        }
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  const apiFetch = async (url: string, options: any = {}) => {
+    const currentToken = token || localStorage.getItem('pawmed_token');
+    const headers = {
+      ...options.headers,
+      'Authorization': currentToken ? `Bearer ${currentToken}` : ''
+    };
+    return fetch(url, { ...options, headers });
+  };
+
+  const checkAuth = async () => {
+    const currentToken = token || localStorage.getItem('pawmed_token');
+    if (!currentToken) {
+      console.log(">>> No token found in storage");
+      return;
+    }
+
+    console.log(">>> Checking auth state with JWT...");
+    setAuthLoading(true);
+    try {
+      const res = await apiFetch('/api/auth/me');
+      if (!res.ok) throw new Error("Error en la respuesta del servidor");
+      const data = await res.json();
+      console.log(">>> Auth data received:", data);
+      if (data) {
+        setUser(data);
+        setStatus({ type: 'success', message: `¡Bienvenido, ${data.name}!` });
+      } else {
+        localStorage.removeItem('pawmed_token');
+        setToken(null);
+      }
+    } catch (e: any) {
+      console.error("Auth check failed:", e);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    setAuthLoading(true);
+    try {
+      const res = await apiFetch('/api/auth/google/url');
+      const { url, error } = await res.json();
+      if (error) throw new Error(error);
+      
+      console.log(">>> Opening OAuth popup:", url);
+      const popup = window.open(url, 'google_login', 'width=500,height=600');
+      
+      if (!popup) {
+        throw new Error("El navegador bloqueó la ventana emergente. Por favor, permite las ventanas emergentes para este sitio.");
+      }
+
+      const checkInterval = setInterval(() => {
+        if (popup.closed) {
+          console.log(">>> Popup closed, checking auth...");
+          clearInterval(checkInterval);
+          checkAuth();
+        }
+      }, 2000);
+    } catch (e: any) {
+      console.error("Login failed:", e);
+      setStatus({ type: 'error', message: e.message });
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await apiFetch('/api/auth/logout', { method: 'POST' });
+      localStorage.removeItem('pawmed_token');
+      setToken(null);
+      setUser(null);
+      setView('home');
+    } catch (e) {
+      console.error("Logout failed:", e);
+    }
+  };
 
   const fetchConfig = async () => {
     try {
-      const res = await fetch('/api/config');
+      const res = await apiFetch('/api/config');
       const data = await res.json();
       setConfig(data);
       if (!data.hasPatientsUrl || !data.hasConsultationsUrl) {
@@ -98,12 +214,12 @@ export default function App() {
   };
 
   const fetchData = async () => {
-    if (view === 'home' || view === 'setup') return;
+    if (view === 'home' || view === 'setup' || !user) return;
     setLoading(true);
     try {
       const [pRes, cRes] = await Promise.all([
-        fetch('/api/data/patients'),
-        fetch('/api/data/consultations')
+        apiFetch('/api/data/patients'),
+        apiFetch('/api/data/consultations')
       ]);
       
       const pData = await pRes.json();
@@ -124,7 +240,7 @@ export default function App() {
     try {
       const isEditing = !!patientForm.id;
       const newPatient = { ...patientForm, id: patientForm.id || Date.now().toString() };
-      const res = await fetch('/api/proxy', {
+      const res = await apiFetch('/api/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'patient', data: newPatient })
@@ -152,7 +268,7 @@ export default function App() {
     try {
       const isEditing = !!consultationForm.id;
       const newConsultation = { ...consultationForm, id: consultationForm.id || Date.now().toString(), fecha: consultationForm.fecha || new Date().toISOString() };
-      const res = await fetch('/api/proxy', {
+      const res = await apiFetch('/api/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'consultation', data: newConsultation })
@@ -263,7 +379,7 @@ export default function App() {
     doc.setTextColor(148, 163, 184);
     doc.text(`Generado por PawMed el ${new Date().toLocaleString()}`, 20, 285);
 
-    doc.save(`Reporte_${patient.nombre}_${new Date().getTime()}.pdf`);
+    doc.save(`Reporte_${(patient.nombre || 'Paciente').replace(/[^a-z0-9]/gi, '_')}_${new Date().getTime()}.pdf`);
   };
 
   const handlePrintConsultation = (patient: Patient, c: Consultation) => {
@@ -332,7 +448,7 @@ export default function App() {
     doc.setTextColor(148, 163, 184);
     doc.text(`Generado por PawMed el ${new Date().toLocaleString()}`, 20, 285);
 
-    doc.save(`Consulta_${patient.nombre}_${new Date().toLocaleDateString().replace(/\//g, '-')}.pdf`);
+    doc.save(`Consulta_${(patient.nombre || 'Paciente').replace(/[^a-z0-9]/gi, '_')}_${new Date(c.fecha).toLocaleDateString().replace(/\//g, '-')}.pdf`);
   };
 
   const filteredPatients = patients.filter(p => 
@@ -416,6 +532,55 @@ function doGet() {
   }
 }`;
 
+  if (!user && config.isAuthConfigured) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <Card className="max-w-md w-full p-10 text-center space-y-8 shadow-2xl">
+          <div className="w-20 h-20 bg-rose-100 text-rose-600 rounded-3xl flex items-center justify-center mx-auto shadow-inner">
+            <Stethoscope size={40} />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-4xl font-black text-slate-900 tracking-tight">PawMed</h1>
+            <p className="text-slate-500 font-medium">Gestión Veterinaria Profesional</p>
+          </div>
+          <div className="pt-4 space-y-4">
+            <button
+              onClick={handleLogin}
+              disabled={authLoading}
+              className="w-full flex items-center justify-center gap-3 bg-white border-2 border-slate-200 text-slate-700 py-4 rounded-2xl font-bold hover:bg-slate-50 hover:border-rose-200 transition-all shadow-sm group disabled:opacity-50"
+            >
+              <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5 group-hover:scale-110 transition-transform" />
+              {authLoading ? 'Procesando...' : 'Iniciar sesión con Google'}
+            </button>
+            
+            {authLoading ? (
+              <div className="flex flex-col items-center gap-2">
+                <div className="w-6 h-6 border-2 border-rose-600 border-t-transparent rounded-full animate-spin"></div>
+                <p className="text-xs text-slate-400 font-medium">Verificando sesión...</p>
+              </div>
+            ) : (
+              <button 
+                onClick={checkAuth}
+                className="text-xs text-rose-600 font-bold hover:underline bg-rose-50 px-4 py-2 rounded-lg transition-colors"
+              >
+                ¿Ya iniciaste sesión? Haz clic aquí para entrar
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-slate-400">
+            Al iniciar sesión, aceptas nuestros términos de servicio y política de privacidad.
+          </p>
+          
+          <div className="pt-8 border-t border-slate-100">
+            <p className="text-[10px] text-slate-300 font-mono">
+              Debug: {window.location.protocol} // {window.location.hostname}
+            </p>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
       {/* Header */}
@@ -435,6 +600,22 @@ function doGet() {
           </button>
 
           <div className="flex items-center gap-4">
+            {user && (
+              <div className="flex items-center gap-3 pr-4 border-r border-slate-100">
+                <div className="text-right hidden sm:block">
+                  <p className="text-xs font-bold text-slate-900">{user.name}</p>
+                  <p className="text-[10px] text-slate-400 font-medium">{user.email}</p>
+                </div>
+                <img src={user.picture} alt={user.name} className="w-8 h-8 rounded-full border border-slate-200" />
+                <button 
+                  onClick={handleLogout}
+                  className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                  title="Cerrar sesión"
+                >
+                  <LogOut size={18} />
+                </button>
+              </div>
+            )}
             <button 
               onClick={() => setView('setup')}
               className={`p-2 rounded-xl transition-colors ${view === 'setup' ? 'bg-rose-50 text-rose-600' : 'text-slate-400 hover:bg-slate-100'}`}

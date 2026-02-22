@@ -19,3 +19,10 @@ export interface Consultation {
   valor: string;
   notas: string;
 }
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  picture: string;
+}
