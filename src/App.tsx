@@ -573,7 +573,7 @@ function doGet() {
           
           <div className="pt-8 border-t border-slate-100">
             <p className="text-[10px] text-slate-300 font-mono">
-              Debug: {window.location.protocol} // {window.location.hostname}
+              Debug: {window.location.protocol} // {window.location.hostname} | v1.0.2
             </p>
           </div>
         </Card>
