@@ -42,10 +42,25 @@ const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
 const JWT_SECRET = process.env.SESSION_SECRET || 'pawmed-jwt-secret-123';
 
 async function startServer() {
+  console.log(">>> Starting server...");
   const app = express();
   const PORT = 3000;
 
   app.use(express.json());
+
+  // Test Route
+  app.all("/api/test", (req, res) => {
+    console.log(`>>> Test route hit: ${req.method} ${req.url}`);
+    res.json({ method: req.method, url: req.url, time: new Date().toISOString() });
+  });
+
+  // Debug/Ping Route
+  app.get("/api/ping", (req, res) => res.json({ 
+    status: "ok", 
+    timestamp: new Date().toISOString(),
+    env: process.env.NODE_ENV,
+    hasGoogleId: !!GOOGLE_CLIENT_ID
+  }));
 
   // Auth Routes
   app.get("/api/auth/google/url", (req, res) => {
@@ -176,7 +191,10 @@ async function startServer() {
   };
 
   // Direct Proxy to Google Sheets (Create/Update)
-  app.post("/api/proxy", checkAuth, async (req, res) => {
+  app.post("/api/proxy", (req, res, next) => {
+    console.log(">>> POST /api/proxy reached");
+    next();
+  }, checkAuth, async (req, res) => {
     const { type, data } = req.body;
     const url = type === "patient" ? PATIENTS_URL : CONSULTATIONS_URL;
     
@@ -272,7 +290,13 @@ async function startServer() {
     app.get("*", (req, res) => res.sendFile(path.join(__dirname, "dist", "index.html")));
   }
 
-  app.listen(PORT, "0.0.0.0", () => console.log(`>>> Server running on port ${PORT}`));
+  // Catch-all for unhandled POST/PUT/DELETE
+  app.use("/api", (req, res) => {
+    console.log(`>>> Unhandled API request: ${req.method} ${req.url}`);
+    res.status(404).json({ error: "API route not found", method: req.method, url: req.url });
+  });
+
+  app.listen(PORT, "0.0.0.0", () => console.log(`>>> Server v1.0.3 running on port ${PORT}`));
 }
 
 startServer();
