@@ -48,6 +48,11 @@ async function startServer() {
 
   app.use(express.json());
 
+  app.use((req, res, next) => {
+    console.log(`>>> [${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+  });
+
   // Test Route
   app.all("/api/test", (req, res) => {
     console.log(`>>> Test route hit: ${req.method} ${req.url}`);
@@ -172,11 +177,15 @@ async function startServer() {
 
   // Middleware to check auth via JWT
   const checkAuth = (req: any, res: any, next: any) => {
-    if (!GOOGLE_CLIENT_ID) return next();
+    console.log(`>>> checkAuth check for: ${req.method} ${req.url}`);
+    if (!GOOGLE_CLIENT_ID) {
+      console.log(">>> Auth skipped: GOOGLE_CLIENT_ID not set");
+      return next();
+    }
     
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log(">>> Auth failed: No Bearer token");
+      console.log(">>> Auth failed: No Bearer token in header");
       return res.status(401).json({ error: "No autorizado" });
     }
     const token = authHeader.split(' ')[1];
@@ -191,8 +200,8 @@ async function startServer() {
   };
 
   // Direct Proxy to Google Sheets (Create/Update)
-  app.post("/api/proxy", (req, res, next) => {
-    console.log(">>> POST /api/proxy reached");
+  app.post(["/api/proxy", "/api/proxy/"], (req, res, next) => {
+    console.log(">>> POST /api/proxy matched");
     next();
   }, checkAuth, async (req, res) => {
     const { type, data } = req.body;
@@ -241,7 +250,7 @@ async function startServer() {
   });
 
   // Direct Fetch from Google Sheets
-  app.get("/api/data/:type", checkAuth, async (req, res) => {
+  app.get(["/api/data/:type", "/api/data/:type/"], checkAuth, async (req, res) => {
     const { type } = req.params;
     const url = type === "patients" ? PATIENTS_URL : CONSULTATIONS_URL;
     
@@ -264,7 +273,7 @@ async function startServer() {
   });
 
   // Delete from Google Sheets
-  app.delete("/api/data/:type/:id", checkAuth, async (req, res) => {
+  app.delete(["/api/data/:type/:id", "/api/data/:type/:id/"], checkAuth, async (req, res) => {
     const { type, id } = req.params;
     const url = type === "patients" ? PATIENTS_URL : CONSULTATIONS_URL;
     
@@ -296,7 +305,12 @@ async function startServer() {
     res.status(404).json({ error: "API route not found", method: req.method, url: req.url });
   });
 
-  app.listen(PORT, "0.0.0.0", () => console.log(`>>> Server v1.0.3 running on port ${PORT}`));
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`>>> Server v1.0.4 running on port ${PORT}`);
+    console.log(`>>> NODE_ENV: ${process.env.NODE_ENV}`);
+    console.log(`>>> PATIENTS_URL configured: ${!!PATIENTS_URL}`);
+    console.log(`>>> CONSULTATIONS_URL configured: ${!!CONSULTATIONS_URL}`);
+  });
 }
 
 startServer();
