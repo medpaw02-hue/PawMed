@@ -1,5 +1,5 @@
 {
   "name": "PawMed - Gestión Veterinaria",
-  "description": "Sistema de gestión para clínicas veterinarias con integración en Google Sheets para pacientes y consultas.",
+  "description": "Sistema de gestión para clínicas veterinarias con integración en Google Sheets para pacientes, consultas y recetas médicas.",
   "requestFramePermissions": []
 }

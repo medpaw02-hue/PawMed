@@ -45,3 +45,13 @@ export interface Consultation {
   notas: string;
 }
 
+export interface Prescription {
+  id: string;
+  consultationId: string;
+  pacienteId: string;
+  fecha: string;
+  prescripcion: string;
+  indicaciones: string;
+  control?: string;
+}
+
